@@ -1,0 +1,102 @@
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: node-alerts
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  groups:
+    - name: node.capacity
+      rules:
+        - alert: NodeFilesystemAlmostFull
+          expr: |
+            (
+              node_filesystem_avail_bytes{fstype!~"tmpfs|overlay", mountpoint="/"}
+              / node_filesystem_size_bytes{fstype!~"tmpfs|overlay", mountpoint="/"}
+            ) < 0.15
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: 'Node {{ $labels.node }} root filesystem has less than 15% free ({{ $value | humanizePercentage }} available).'
+            runbook_url: https://runbooks.prometheus-operator.dev/runbooks/node/nodefilesystemalmostoutofspace/
+
+        - alert: NodeFilesystemFillingUp
+          expr: |
+            predict_linear(node_filesystem_avail_bytes{fstype!~"tmpfs|overlay", mountpoint="/"}[6h], 24 * 3600) < 0
+            and
+            node_filesystem_avail_bytes{fstype!~"tmpfs|overlay", mountpoint="/"}
+            / node_filesystem_size_bytes{fstype!~"tmpfs|overlay", mountpoint="/"} < 0.30
+          for: 30m
+          labels:
+            severity: critical
+          annotations:
+            summary: 'Node {{ $labels.node }} root filesystem is predicted to fill up within 24h.'
+            runbook_url: https://runbooks.prometheus-operator.dev/runbooks/node/nodefilesystemspacefillingup/
+
+        - alert: NodeMemoryPressure
+          expr: |
+            (
+              node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes
+            ) < 0.05
+          for: 10m
+          labels:
+            severity: critical
+          annotations:
+            summary: 'Node {{ $labels.node }} has less than 5% memory available ({{ $value | humanizePercentage }}).'
+
+        - alert: NodeHighCPUSaturation
+          expr: |
+            1 - avg by (node) (
+              rate(node_cpu_seconds_total{mode="idle"}[5m])
+            ) > 0.90
+          for: 30m
+          labels:
+            severity: warning
+          annotations:
+            summary: 'Node {{ $labels.node }} CPU usage above 90% for 30 minutes ({{ $value | humanizePercentage }}).'
+
+    - name: node.health
+      rules:
+        - alert: NodeNotReady
+          expr: |
+            kube_node_status_condition{condition="Ready", status="true"} == 0
+          for: 5m
+          labels:
+            severity: critical
+          annotations:
+            summary: 'Node {{ $labels.node }} has been NotReady for more than 5 minutes.'
+            runbook_url: https://runbooks.prometheus-operator.dev/runbooks/kubernetes/kubenodenotready/
+
+        - alert: NodeUnschedulableTooLong
+          expr: |
+            kube_node_spec_unschedulable == 1
+          for: 4h
+          labels:
+            severity: warning
+          annotations:
+            summary: 'Node {{ $labels.node }} has been cordoned for more than 4 hours — forgotten after maintenance?'
+
+        - alert: KubeletTooManyPods
+          expr: |
+            kubelet_running_pods
+            / on (node) kube_node_status_capacity{resource="pods"} > 0.90
+          for: 15m
+          labels:
+            severity: warning
+          annotations:
+            summary: 'Kubelet on {{ $labels.node }} is running at more than 90% of its pod capacity.'
+
+        - alert: NodeClockSkewDetected
+          expr: |
+            (node_timex_offset_seconds > 0.05 and deriv(node_timex_offset_seconds[5m]) >= 0)
+            or
+            (node_timex_offset_seconds < -0.05 and deriv(node_timex_offset_seconds[5m]) <= 0)
+          for: 10m
+          labels:
+            severity: warning
+          annotations:
+            summary: 'Clock on node {{ $labels.node }} is out of sync by more than 50ms and not converging.'

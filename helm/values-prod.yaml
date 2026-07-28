@@ -1,0 +1,197 @@
+# kube-prometheus-stack — production values (GKE)
+# Chart: prometheus-community/kube-prometheus-stack 70.x
+
+fullnameOverride: kps
+
+defaultRules:
+  create: true
+  rules:
+    # Replaced by our own SLO-based rules in alerts/
+    kubeApiserverAvailability: false
+    kubeApiserverBurnrate: false
+
+prometheus:
+  prometheusSpec:
+    replicas: 1
+    retention: 30d
+    retentionSize: 45GB
+    walCompression: true
+    # Pick up ServiceMonitors/PodMonitors/Rules from all namespaces,
+    # regardless of helm release labels.
+    serviceMonitorSelectorNilUsesHelmValues: false
+    podMonitorSelectorNilUsesHelmValues: false
+    ruleSelectorNilUsesHelmValues: false
+    probeSelectorNilUsesHelmValues: false
+    scrapeInterval: 30s
+    evaluationInterval: 30s
+    enableAdminAPI: false
+    externalLabels:
+      cluster: prod-gke-europe-west1
+      environment: prod
+    resources:
+      requests:
+        cpu: "1"
+        memory: 6Gi
+      limits:
+        memory: 8Gi
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: premium-rwo
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 50Gi
+    securityContext:
+      runAsNonRoot: true
+      runAsUser: 1000
+      fsGroup: 2000
+    topologySpreadConstraints:
+      - maxSkew: 1
+        topologyKey: topology.kubernetes.io/zone
+        whenUnsatisfiable: ScheduleAnyway
+        labelSelector:
+          matchLabels:
+            app.kubernetes.io/name: prometheus
+
+alertmanager:
+  alertmanagerSpec:
+    replicas: 2
+    retention: 120h
+    # Secrets are mounted under /etc/alertmanager/secrets/<name>/
+    secrets:
+      - alertmanager-slack
+      - alertmanager-pagerduty
+    resources:
+      requests:
+        cpu: 50m
+        memory: 128Mi
+      limits:
+        memory: 256Mi
+    storage:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: premium-rwo
+          accessModes:
+            - ReadWriteOnce
+          resources:
+            requests:
+              storage: 5Gi
+  config:
+    global:
+      resolve_timeout: 5m
+      slack_api_url_file: /etc/alertmanager/secrets/alertmanager-slack/webhook-url
+    route:
+      receiver: slack-warnings
+      group_by: ["alertname", "namespace"]
+      group_wait: 30s
+      group_interval: 5m
+      repeat_interval: 12h
+      routes:
+        - receiver: pagerduty-critical
+          matchers:
+            - severity = "critical"
+          group_wait: 15s
+          repeat_interval: 4h
+          continue: true
+        - receiver: slack-critical
+          matchers:
+            - severity = "critical"
+        - receiver: slack-warnings
+          matchers:
+            - severity = "warning"
+        - receiver: "null"
+          matchers:
+            - alertname = "Watchdog"
+    inhibit_rules:
+      - source_matchers:
+          - severity = "critical"
+        target_matchers:
+          - severity = "warning"
+        equal: ["alertname", "namespace"]
+    receivers:
+      - name: "null"
+      - name: pagerduty-critical
+        pagerduty_configs:
+          - routing_key_file: /etc/alertmanager/secrets/alertmanager-pagerduty/routing-key
+            severity: critical
+            description: '{{ .CommonAnnotations.summary }}'
+      - name: slack-critical
+        slack_configs:
+          - channel: "#alerts-critical"
+            send_resolved: true
+            title: '[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}'
+            text: '{{ range .Alerts }}{{ .Annotations.summary }}{{ "\n" }}{{ end }}'
+      - name: slack-warnings
+        slack_configs:
+          - channel: "#alerts-warning"
+            send_resolved: true
+            title: '[{{ .Status | toUpper }}] {{ .CommonLabels.alertname }}'
+            text: '{{ range .Alerts }}{{ .Annotations.summary }}{{ "\n" }}{{ end }}'
+
+grafana:
+  replicas: 1
+  admin:
+    existingSecret: grafana-admin
+    userKey: admin-user
+    passwordKey: admin-password
+  defaultDashboardsTimezone: utc
+  persistence:
+    enabled: false # dashboards are provisioned from ConfigMaps, Grafana is stateless
+  sidecar:
+    dashboards:
+      enabled: true
+      label: grafana_dashboard
+      searchNamespace: ALL
+      folderAnnotation: grafana_folder
+      provider:
+        foldersFromFilesStructure: true
+    datasources:
+      enabled: true
+  resources:
+    requests:
+      cpu: 100m
+      memory: 256Mi
+    limits:
+      memory: 512Mi
+  grafana.ini:
+    server:
+      root_url: https://grafana.example.com
+    auth.anonymous:
+      enabled: false
+    analytics:
+      reporting_enabled: false
+      check_for_updates: false
+
+kube-state-metrics:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+prometheus-node-exporter:
+  resources:
+    requests:
+      cpu: 25m
+      memory: 32Mi
+    limits:
+      memory: 64Mi
+  prometheus:
+    monitor:
+      relabelings:
+        - sourceLabels: [__meta_kubernetes_pod_node_name]
+          targetLabel: node
+          action: replace
+
+# GKE-managed control plane: these components are not scrapable
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeEtcd:
+  enabled: false
+kubeProxy:
+  enabled: false

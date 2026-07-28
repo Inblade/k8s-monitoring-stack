@@ -1,0 +1,101 @@
+# Multi-window, multi-burn-rate SLO alerts (Google SRE Workbook, ch. 5).
+# SLO: 99.9% of HTTP requests to the api-gateway succeed (non-5xx) over 30 days.
+# Error budget: 0.1%. Burn rate 1 = budget exhausted in exactly 30 days.
+#
+#   window pair   burn rate   budget consumed   action
+#   1h  / 5m      14.4        2% in 1h          page (PagerDuty)
+#   6h  / 30m     6           5% in 6h          page (PagerDuty)
+#   3d  / 6h      1           10% in 3d         ticket (Slack)
+apiVersion: monitoring.coreos.com/v1
+kind: PrometheusRule
+metadata:
+  name: slo-alerts
+  namespace: monitoring
+  labels:
+    release: kube-prometheus-stack
+  annotations:
+    argocd.argoproj.io/sync-wave: "2"
+spec:
+  groups:
+    - name: slo.api-gateway.rules
+      interval: 30s
+      rules:
+        # Recording rules: error ratio over each window
+        - record: slo:api_gateway_error_ratio:rate5m
+          expr: |
+            sum(rate(http_requests_total{job="api-gateway", code=~"5.."}[5m]))
+            /
+            sum(rate(http_requests_total{job="api-gateway"}[5m]))
+        - record: slo:api_gateway_error_ratio:rate30m
+          expr: |
+            sum(rate(http_requests_total{job="api-gateway", code=~"5.."}[30m]))
+            /
+            sum(rate(http_requests_total{job="api-gateway"}[30m]))
+        - record: slo:api_gateway_error_ratio:rate1h
+          expr: |
+            sum(rate(http_requests_total{job="api-gateway", code=~"5.."}[1h]))
+            /
+            sum(rate(http_requests_total{job="api-gateway"}[1h]))
+        - record: slo:api_gateway_error_ratio:rate6h
+          expr: |
+            sum(rate(http_requests_total{job="api-gateway", code=~"5.."}[6h]))
+            /
+            sum(rate(http_requests_total{job="api-gateway"}[6h]))
+        - record: slo:api_gateway_error_ratio:rate3d
+          expr: |
+            sum(rate(http_requests_total{job="api-gateway", code=~"5.."}[3d]))
+            /
+            sum(rate(http_requests_total{job="api-gateway"}[3d]))
+
+    - name: slo.api-gateway.alerts
+      rules:
+        - alert: APIGatewayErrorBudgetFastBurn
+          expr: |
+            slo:api_gateway_error_ratio:rate1h > (14.4 * 0.001)
+            and
+            slo:api_gateway_error_ratio:rate5m > (14.4 * 0.001)
+          for: 2m
+          labels:
+            severity: critical
+            slo: api-gateway-availability
+          annotations:
+            summary: 'api-gateway is burning 30d error budget at >=14.4x — 2% of budget gone in the last hour.'
+            description: 'Error ratio over 1h: {{ $value | humanizePercentage }} (SLO allows 0.1%). At this rate the monthly budget is exhausted in ~2 days.'
+
+        - alert: APIGatewayErrorBudgetSlowBurn
+          expr: |
+            slo:api_gateway_error_ratio:rate6h > (6 * 0.001)
+            and
+            slo:api_gateway_error_ratio:rate30m > (6 * 0.001)
+          for: 15m
+          labels:
+            severity: critical
+            slo: api-gateway-availability
+          annotations:
+            summary: 'api-gateway is burning 30d error budget at >=6x — 5% of budget gone in the last 6 hours.'
+            description: 'Error ratio over 6h: {{ $value | humanizePercentage }} (SLO allows 0.1%).'
+
+        - alert: APIGatewayErrorBudgetBaselineBurn
+          expr: |
+            slo:api_gateway_error_ratio:rate3d > 0.001
+            and
+            slo:api_gateway_error_ratio:rate6h > 0.001
+          for: 1h
+          labels:
+            severity: warning
+            slo: api-gateway-availability
+          annotations:
+            summary: 'api-gateway has burned error budget at >=1x for 3 days — budget will not last the month.'
+            description: 'Error ratio over 3d: {{ $value | humanizePercentage }} (SLO allows 0.1%). Open a ticket and investigate the top error sources.'
+
+        - alert: APIGatewayLatencySLOBreach
+          expr: |
+            histogram_quantile(0.99,
+              sum by (le) (rate(http_request_duration_seconds_bucket{job="api-gateway"}[10m]))
+            ) > 0.5
+          for: 15m
+          labels:
+            severity: warning
+            slo: api-gateway-latency
+          annotations:
+            summary: 'api-gateway p99 latency above 500ms for 15 minutes ({{ $value | humanizeDuration }}).'
