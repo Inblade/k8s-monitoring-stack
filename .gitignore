@@ -1,0 +1,15 @@
+# Secrets and local material — never commit
+*.key
+*.pem
+slack-webhook-url
+pagerduty-routing-key
+secrets/
+
+# Helm
+charts/
+*.tgz
+
+# Editors / OS
+.idea/
+.vscode/
+.DS_Store
