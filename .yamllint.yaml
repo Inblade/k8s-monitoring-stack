@@ -1,0 +1,16 @@
+# Relaxed on line length and comment spacing — these manifests carry long
+# PromQL expressions and inline explanations, and reflowing them to satisfy a
+# linter would make them harder to read, not easier.
+extends: default
+
+rules:
+  line-length: disable
+  comments:
+    min-spaces-from-content: 1
+  comments-indentation: disable
+  truthy:
+    check-keys: false
+  document-start: disable
+  indentation:
+    spaces: consistent
+    indent-sequences: consistent

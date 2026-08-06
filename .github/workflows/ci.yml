@@ -1,0 +1,79 @@
+name: ci
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+
+permissions:
+  contents: read
+
+env:
+  PROMETHEUS_VERSION: "3.13.2"
+
+jobs:
+  rules:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install PyYAML
+        run: pip install --quiet pyyaml
+
+      - name: Install promtool
+        run: |
+          curl -sSfL "https://github.com/prometheus/prometheus/releases/download/v${PROMETHEUS_VERSION}/prometheus-${PROMETHEUS_VERSION}.linux-amd64.tar.gz" \
+            | tar -xz
+          sudo install "prometheus-${PROMETHEUS_VERSION}.linux-amd64/promtool" /usr/local/bin/
+          promtool --version
+
+      # The manifests are PrometheusRule custom resources; promtool wants a
+      # plain rule file, so unwrap spec.groups first.
+      - name: Render rules
+        run: python3 scripts/render-rules.py
+
+      - name: Check rules
+        run: promtool check rules .rendered/*.yaml
+
+      # The rules that matter here are the SLO burn rates. Checking that they
+      # parse says nothing about whether they fire at the right moment.
+      - name: Unit-test the alerting rules
+        run: promtool test rules tests/*.test.yaml
+
+  yaml:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install yamllint
+        run: pip install --quiet yamllint
+      - name: Lint
+        run: yamllint -c .yamllint.yaml alerts/ argocd/ helm/ tests/
+
+  manifests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      # Validates the Kubernetes objects against their schemas, including the
+      # PrometheusRule and Argo CD Application CRDs.
+      - name: Install kubeconform
+        run: |
+          curl -sSfL "https://github.com/yannh/kubeconform/releases/download/v0.7.0/kubeconform-linux-amd64.tar.gz" \
+            | tar -xz
+          sudo install kubeconform /usr/local/bin/
+
+      - name: Validate manifests
+        run: |
+          kubeconform \
+            -strict \
+            -summary \
+            -schema-location default \
+            -schema-location 'https://raw.githubusercontent.com/datreeio/CRDs-catalog/main/{{.Group}}/{{.ResourceKind}}_{{.ResourceAPIVersion}}.json' \
+            alerts/ argocd/

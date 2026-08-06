@@ -1,0 +1,132 @@
+# promtool unit tests for the multi-window multi-burn-rate SLO alerts.
+#
+#   make test    (or: promtool test rules tests/slo-alerts.test.yaml)
+#
+# The point of these is not that the PromQL parses — promtool check rules
+# already covers that. It is that each burn rate fires on the failure it was
+# designed for and stays quiet otherwise. The whole reason for three windows
+# rather than one threshold is that a fast burn and a slow leak need different
+# responses, and this is where that claim gets checked.
+
+rule_files:
+  - ../.rendered/slo-alerts.yaml
+
+evaluation_interval: 1m
+
+tests:
+  # ---------------------------------------------------------------------
+  # Fast burn: 2% errors is 20x the 0.1% budget, past the 14.4x threshold
+  # on both the 1h and the 5m window.
+  # ---------------------------------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'http_requests_total{job="api-gateway", code="200"}'
+        values: "0+98x450"
+      - series: 'http_requests_total{job="api-gateway", code="500"}'
+        values: "0+2x450"
+
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: APIGatewayErrorBudgetFastBurn
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              slo: api-gateway-availability
+            exp_annotations:
+              summary: "api-gateway is burning 30d error budget at >=14.4x — 2% of budget gone in the last hour."
+              description: "Error ratio over 1h: 2% (SLO allows 0.1%). At this rate the monthly budget is exhausted in ~2 days."
+
+      # The 6h/30m pair trips as well once its window has filled. Both firing
+      # is expected: they share an slo label so Alertmanager groups them into
+      # one page rather than two.
+      - eval_time: 6h30m
+        alertname: APIGatewayErrorBudgetSlowBurn
+        exp_alerts:
+          - exp_labels:
+              severity: critical
+              slo: api-gateway-availability
+            exp_annotations:
+              summary: "api-gateway is burning 30d error budget at >=6x — 5% of budget gone in the last 6 hours."
+              description: "Error ratio over 6h: 2% (SLO allows 0.1%)."
+
+  # ---------------------------------------------------------------------
+  # Healthy service: 0.05% errors, half the allowed burn rate. Silence.
+  # ---------------------------------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'http_requests_total{job="api-gateway", code="200"}'
+        values: "0+1999x450"
+      - series: 'http_requests_total{job="api-gateway", code="500"}'
+        values: "0+1x450"
+
+    alert_rule_test:
+      - eval_time: 2h
+        alertname: APIGatewayErrorBudgetFastBurn
+        exp_alerts: []
+      - eval_time: 6h30m
+        alertname: APIGatewayErrorBudgetSlowBurn
+        exp_alerts: []
+      - eval_time: 7h
+        alertname: APIGatewayErrorBudgetBaselineBurn
+        exp_alerts: []
+
+  # ---------------------------------------------------------------------
+  # A service with no traffic at all must not alert. The error ratio is
+  # 0/0 = NaN, and a comparison against NaN is false — but this is exactly
+  # the shape that produces phantom pages at 04:00 on a low-traffic
+  # weekend if the expression is ever rewritten carelessly.
+  # ---------------------------------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'http_requests_total{job="api-gateway", code="200"}'
+        values: "1000x120"
+      - series: 'http_requests_total{job="api-gateway", code="500"}'
+        values: "0x120"
+
+    alert_rule_test:
+      - eval_time: 90m
+        alertname: APIGatewayErrorBudgetFastBurn
+        exp_alerts: []
+
+  # ---------------------------------------------------------------------
+  # Latency SLO: p99 above 500ms for 15 minutes.
+  # ---------------------------------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'http_request_duration_seconds_bucket{job="api-gateway", le="0.1"}'
+        values: "0+10x60"
+      - series: 'http_request_duration_seconds_bucket{job="api-gateway", le="0.5"}'
+        values: "0+20x60"
+      - series: 'http_request_duration_seconds_bucket{job="api-gateway", le="1.0"}'
+        values: "0+100x60"
+      - series: 'http_request_duration_seconds_bucket{job="api-gateway", le="+Inf"}'
+        values: "0+100x60"
+
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: APIGatewayLatencySLOBreach
+        exp_alerts:
+          - exp_labels:
+              severity: warning
+              slo: api-gateway-latency
+            exp_annotations:
+              summary: "api-gateway p99 latency above 500ms for 15 minutes (993.7ms)."
+
+  # ---------------------------------------------------------------------
+  # Everything served under 100ms: nothing fires.
+  # ---------------------------------------------------------------------
+  - interval: 1m
+    input_series:
+      - series: 'http_request_duration_seconds_bucket{job="api-gateway", le="0.1"}'
+        values: "0+100x60"
+      - series: 'http_request_duration_seconds_bucket{job="api-gateway", le="0.5"}'
+        values: "0+100x60"
+      - series: 'http_request_duration_seconds_bucket{job="api-gateway", le="1.0"}'
+        values: "0+100x60"
+      - series: 'http_request_duration_seconds_bucket{job="api-gateway", le="+Inf"}'
+        values: "0+100x60"
+
+    alert_rule_test:
+      - eval_time: 45m
+        alertname: APIGatewayLatencySLOBreach
+        exp_alerts: []
