@@ -90,15 +90,21 @@ tests:
 
   # ---------------------------------------------------------------------
   # Latency SLO: p99 above 500ms for 15 minutes.
+  #
+  # Every request lands in the +Inf bucket, so histogram_quantile returns the
+  # upper bound of the last finite bucket — exactly 1s. That is deliberate:
+  # a quantile interpolated inside a bucket comes out as 993.7ms on arm64 and
+  # 993.8ms on amd64, and pinning either one makes the suite fail on whichever
+  # machine it was not written on.
   # ---------------------------------------------------------------------
   - interval: 1m
     input_series:
       - series: 'http_request_duration_seconds_bucket{job="api-gateway", le="0.1"}'
-        values: "0+10x60"
+        values: "0x60"
       - series: 'http_request_duration_seconds_bucket{job="api-gateway", le="0.5"}'
-        values: "0+20x60"
+        values: "0x60"
       - series: 'http_request_duration_seconds_bucket{job="api-gateway", le="1.0"}'
-        values: "0+100x60"
+        values: "0x60"
       - series: 'http_request_duration_seconds_bucket{job="api-gateway", le="+Inf"}'
         values: "0+100x60"
 
@@ -110,7 +116,7 @@ tests:
               severity: warning
               slo: api-gateway-latency
             exp_annotations:
-              summary: "api-gateway p99 latency above 500ms for 15 minutes (993.7ms)."
+              summary: "api-gateway p99 latency above 500ms for 15 minutes (1s)."
 
   # ---------------------------------------------------------------------
   # Everything served under 100ms: nothing fires.
