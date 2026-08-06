@@ -13,3 +13,6 @@ charts/
 .idea/
 .vscode/
 .DS_Store
+
+# Rendered rule files (regenerate with scripts/render-rules.py)
+.rendered/

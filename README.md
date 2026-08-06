@@ -1,5 +1,9 @@
 # k8s-monitoring-stack
 
+[![ci](https://github.com/Inblade/k8s-monitoring-stack/actions/workflows/ci.yml/badge.svg)](https://github.com/Inblade/k8s-monitoring-stack/actions/workflows/ci.yml)
+[![Prometheus](https://img.shields.io/badge/prometheus-3.x-E6522C?logo=prometheus&logoColor=white)](https://prometheus.io)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green.svg)](LICENSE)
+
 Production-grade Kubernetes monitoring platform blueprint: [kube-prometheus-stack](https://github.com/prometheus-community/helm-charts/tree/main/charts/kube-prometheus-stack) deployed to GKE via ArgoCD, with SLO burn-rate alerting and multi-channel routing (Slack + PagerDuty).
 
 This is a **reference implementation** distilled from several years of running Prometheus-based monitoring in production on GKE and bare-metal clusters. It is a template, not a copy of any company's internal repository — adapt values, thresholds, and routing to your environment.
@@ -26,6 +30,12 @@ Most "getting started" monitoring guides stop at `helm install`. In production y
 │   └── slo-alerts.yaml       # PrometheusRule: multi-window multi-burn-rate SLO alerts
 ├── dashboards/
 │   └── README.md             # How dashboards are provisioned (sidecar + ConfigMaps)
+├── tests/
+│   ├── node-alerts.test.yaml # promtool unit tests: thresholds and label joins
+│   └── slo-alerts.test.yaml  # promtool unit tests: burn rates fire and stay quiet
+├── scripts/
+│   └── render-rules.py       # Unwraps PrometheusRule CRDs into plain rule files
+├── Makefile
 ├── LICENSE
 └── .gitignore
 ```
@@ -58,6 +68,46 @@ Most "getting started" monitoring guides stop at `helm install`. In production y
    ```bash
    promtool check rules <(yq '.spec' alerts/slo-alerts.yaml)
    ```
+
+## Testing the alerts
+
+Alerting rules are code, and untested rules are the kind of code that is wrong
+for six months and then wrong at 03:00. Everything here runs locally in
+seconds, with no cluster:
+
+```bash
+make check     # render + promtool check + unit tests + yamllint
+make test      # just the alert unit tests
+```
+
+`promtool check rules` only proves the PromQL parses. The unit tests in
+`tests/` assert behaviour:
+
+- **Burn rates fire on the failure they were designed for.** A sustained 2%
+  error rate trips the 14.4x fast burn within the hour; a 0.05% rate — half
+  the allowed budget — trips nothing at all.
+- **Silence is asserted as carefully as firing.** A healthy service and a
+  service with no traffic at all both produce zero alerts. The no-traffic case
+  matters: the error ratio is `0/0`, and a careless rewrite of that expression
+  is exactly how phantom pages appear on a quiet weekend.
+- **Thresholds match their summaries.** Every alert whose annotation claims a
+  number is checked against that number, so the two cannot drift apart.
+- **Label joins actually produce a result.** `KubeletTooManyPods` joins two
+  metrics from different exporters `on (node)`. If either side loses that
+  label the match yields nothing and the alert silently stops existing — a
+  failure mode that looks identical to "everything is fine". The test pins the
+  assumption down.
+- **Clock skew only pages when it is not converging.** A node whose offset is
+  large but shrinking is already being fixed by ntp; the `deriv` half of that
+  expression exists to keep it quiet, and the test proves it does.
+
+CI additionally validates every manifest against its schema with kubeconform,
+including the `PrometheusRule` and Argo CD `Application` CRDs.
+
+Because the manifests are custom resources rather than plain rule files,
+`scripts/render-rules.py` unwraps `spec.groups` into `.rendered/` first. It
+also rejects a manifest that is not a `PrometheusRule`, or a rule group with
+no name or no rules.
 
 ## Design notes
 
